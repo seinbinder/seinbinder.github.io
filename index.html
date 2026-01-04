@@ -4,20 +4,50 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TEST</title>
+    <title>Asteroids</title>
     <link rel="icon" href="./web/asteroid.png">
     <style>
-        body { margin: 0; display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #333333; }
-        canvas { background-color: #000; }
-          div {
-    margin-bottom: 10px; /* Add some space between canvases */
-  }
+        :root { --gap: 16px; }
+        body {
+            margin: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: left;
+            justify-content: center; /* center stats + canvases vertically */
+            background-color: #333333;
+            overflow: hidden; /* prevent page scroll */
+        }
+        #stats {
+            width: auto;
+            text-align: left;
+            padding: 10px 20px 0;
+            box-sizing: border-box;
+            font-family: Arial, sans-serif;
+            font-size: 10pt;
+        }
+        .canvas-row {
+            display: flex;
+            flex-wrap: nowrap;
+            gap: var(--gap);       /* small gap between canvases */
+            align-items: center;
+            justify-content: center;
+            box-sizing: border-box;
+            padding: 0;
+        }
+        canvas {
+            background-color: #000;
+            display: block;
+            flex: 0 0 auto;        /* fixed pixel size set via JS */
+        }
     </style>
 </head>
 <body>
-    <canvas id="gameCanvasZ"></canvas><!-- player zero centered -->
-    &nbsp;
-    <canvas id="gameCanvasO"></canvas><!-- outsider view -->
-    <script type="module" src="./web/asteroids.js"></script>
+    <div id="stats"></div>
+    <div class="canvas-row">
+        <canvas id="gameCanvasZ"></canvas>
+        <canvas id="gameCanvasO"></canvas>
+    </div>
+    <script type="module" src="web/asteroids.js"></script>
 </body>
 </html>
