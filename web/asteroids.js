@@ -1,19 +1,24 @@
-// asteroids.js is the web UI and game loop
-// Game is played in a zero-centered system (canvasZ),
-// also rendered in an observer's translated & rotated view (canvasO).
+// asteroids.js is the web UI for live HumanAgent and Replay games
+// Zero-centered system player's view and World View
+// multiple playbacks side-by-side, quick-sanity grid, and grid side-by-side
 
-// zero-centered coordinate system (where the game is actually played)
-const canvasZ = (document.getElementById('gameCanvasZ'));
-const ctxZ = (canvasZ.getContext('2d'));
+import { Draw } from './draw.js';
 
-// translated & rotated view (observer, aka 'outsider' perspective)
-const canvasO =  (document.getElementById('gameCanvasO'));
-const ctxO =  (canvasO.getContext('2d'));
+// two available canvases, Left and Right
+const canvasL = (document.getElementById('gameCanvasL'));
+const canvasR =  (document.getElementById('gameCanvasR'));
+resizeCanvas()
 
 // stats div outside of canvas (see index.html)
 const statsDiv = document.getElementById("stats");
 statsDiv.style.color = "#cccccc";
 statsDiv.style.fontFamily = "monospace";
+
+// shorthand
+const Z = "zero"; // draw flag
+const W = "world"; // draw flag
+const L = canvasL;
+const R = canvasR;
 
 // user controls (ignored when using `humanAgent`)
 const controls = {
@@ -21,113 +26,40 @@ const controls = {
     stepOnce: false,
     stepHold: false,
     trails: false,
-    radials: false,
     replay: false,
     done: false,
 };
-let activeAgent = null;
+
 let sKeyDown = false;   // for 's' key hold detection
 let sHoldTimer = null;
 
-// function takes obs, draws to a given canvas. takes and draws action, too
-function draw(obs, action, canvas, ctx) {
+// rollout(obs, agent) plays a game till target reached. agentID is text string shown in status bar
+async function rollout(obs, agent, agentID, pbList = null, canvas, view) {
 
-    // scale input wp from -1..1 to canvas size
-    const scaleX = canvas.width / 2;
-    const scaleY = canvas.height / 2;
-
-    if (!controls.trails) ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (controls.radials) {
-        // draw radials from center every 45°
-        ctx.strokeStyle = "#404040";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        for (let angle = 0; angle < 360; angle += 45) {
-            const angle_rad = angle * Math.PI / 180;
-            const x = scaleX + Math.cos(angle_rad) * scaleX *.99;
-            const y = scaleY - Math.sin(angle_rad) * scaleY *.99;
-            ctx.moveTo(scaleX, scaleY);
-            ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-    }
-
-    // wp1 circle
-    ctx.fillStyle = "red";
-    ctx.beginPath();
-    ctx.arc(obs.wp1x * scaleX + scaleX, -obs.wp1y * scaleY + scaleY, 2, 0, 2 * Math.PI);
-    ctx.fill();
-    // ctx.fillRect(obs.wp1x * scaleX + scaleX - 2, -obs.wp1y * scaleY + scaleY -10, 4, 20);
-
-    // draw player at 0,0, in blue
-    ctx.fillStyle = "blue";
-    ctx.beginPath();
-    // ctx.arc(scaleX, scaleY, 5, 0, 2 * Math.PI);
-    // ctx.fill();
-    ctx.fillRect(scaleX - 2, scaleY -10, 4, 20);
-
-    // action indication: flame proportional to throttle, steering direction.
-    if (action) {
-        if (action.throttle > 0) {
-            ctx.fillStyle = "lightblue";
-            ctx.beginPath();
-            ctx.moveTo(scaleX - 3, scaleY + 5);
-            ctx.lineTo(scaleX + 3, scaleY + 5);
-            ctx.lineTo(scaleX, scaleY + 5 + action.throttle * 10);
-            ctx.closePath();
-            ctx.fill();
-        }
-
-        if (action.steering < 0) {
-            ctx.fillStyle = "lightgreen";
-            ctx.beginPath();
-            ctx.arc(scaleX + 10, scaleY, 1, 0, 2 * Math.PI);
-            ctx.fill();
-        } else if (action.steering > 0) {
-            ctx.fillStyle = "lightgreen";
-            ctx.beginPath();
-            ctx.arc(scaleX - 10, scaleY, 1, 0, 2 * Math.PI);
-            ctx.fill();
-        }
-    }
-}
-function drawStats(steps, action, obs, done) {
-    let text = `Steps: ${String(steps).padStart(4, '\xA0')} \xA0steer: ${pad(action.steering,2)} \xA0\xA0throttle: ${action.throttle.toFixed(2)}`;
-    // add obs values
-    text += `\xA0\xA0wp1: (${pad(obs.wp1x,4)}, ${pad(obs.wp1y,4)}) \xA0vel: (${pad(obs.velx,4)}, ${pad(obs.vely,4)}) \xA0\xA0Done: ${done}`;
-    statsDiv.textContent = text;
-}
-// rollout(obs, agent) plays a game till target reached
-async function rollout(obs, agent, pbList = null) {
-
-    activeAgent = agent;
     const initialObs = { ...obs }; // save initial obs for 'r' replay. ... is a copy to ensure we don't accidently muck the original 
     let steps = 0;
     const maxSteps = 3000;
+    const draw = new Draw(canvas, view);
 
     function resetRunState() {
         obs = { ...initialObs };
+        draw.initialObs(obs)    // save initial obs for world view, reset angleTotal
+        draw.draw(obs, 0, 0, true);   // draw initial obs, no action, angle 0
         steps = 0;
-        // (don't unpause on reset. allow to step from start)
-        clearStepState();
+        clearStepKeyState();
         controls.replay = false;
         controls.done = false;
-        drawStats(steps, { throttle: NaN, steering: NaN }, obs, controls.done); // initial conditions
+        const statText = formatStats(agentID, steps, { throttle: NaN, steering: NaN }, obs, controls.done); // initial conditions
+        draw.drawTopText(statText);
     }
 
     // start state
     resetRunState();
 
-    // before rolling out the game, prepare outsider's view constants
-    const scaleX = canvasO.width / 2;
-    const scaleY = canvasO.height / 2;
-    const toPix = (x, y) => ({ x: scaleX + x * scaleX, y: scaleY - y * scaleY });
-    const initWp1_px = toPix(obs.wp1x, obs.wp1y);
-
     while (true) {
 
         // process UI controls
-        if (controls.replay) { resetRunState();        }
+        if (controls.replay) { resetRunState();  }
         if (controls.done) { await new Promise(requestAnimationFrame); continue;}
         if (controls.paused && !(controls.stepOnce || controls.stepHold)) { await new Promise(requestAnimationFrame); continue;}
 
@@ -135,31 +67,8 @@ async function rollout(obs, agent, pbList = null) {
         let { nextObs, action, angleDelta, done } = stepOnce(obs, agent, pbList, steps);
         obs = nextObs;
         let doneNow = done;
-        const angle_delta = angleDelta;
 
-        draw(obs, action, canvasZ, ctxZ);
-
-        // prepare to translate/rotate canvas0. all math in pixels
-        const wp1_px = toPix(obs.wp1x, obs.wp1y);
-        const cos_angle = Math.cos(angle_delta)
-        const sin_angle = Math.sin(angle_delta);
-        // where wp1 would land after rotating the canvas about center
-        const delta_x = wp1_px.x - scaleX;
-        const delta_y = wp1_px.y - scaleY;
-        const wp1RotatedX = scaleX + delta_x * cos_angle - delta_y * sin_angle
-        const wp1RotatedY = scaleY + delta_x * sin_angle + delta_y * cos_angle;
-        // translation to move wp1 back to initial position
-        const tx = initWp1_px.x - wp1RotatedX;
-        const ty = initWp1_px.y - wp1RotatedY;
-
-        ctxO.save();    // save & restore so the transformations don't accumulate
-        ctxO.translate(tx, ty);
-        ctxO.translate(scaleX, scaleY);
-        ctxO.rotate(angle_delta); 
-        ctxO.translate(-scaleX, -scaleY);
-
-        draw(obs, action, canvasO, ctxO); 
-        ctxO.restore();
+        draw.draw(obs, action, angleDelta, controls.trails);
 
         if (controls.stepOnce) {
             controls.stepOnce = false;
@@ -173,11 +82,89 @@ async function rollout(obs, agent, pbList = null) {
             console.log("GAME TERMINATED at Max steps reached ${maxSteps} ${done}");
         }
         controls.done = doneNow;
-        drawStats(steps, action, obs, done);
+
+        draw.drawTopText(formatStats(agentID, steps, action, obs, done));
         if (controls.done) console.log("Game Done");
 
         await new Promise(requestAnimationFrame)
     }
+}
+
+// draws N tiles based on entries in .mpb
+async function gridPlayback(mpbFilename, canvas, view) {
+    const maxSteps = 3000;
+    let gridTotalSteps = 0;
+    let steps = 0;
+
+    const url = new URL(mpbFilename, import.meta.url);
+    const resp = await fetch(url, {cache: 'no-store'});
+    if(!resp.ok) {
+        console.log("Failed to load .mpb", mpbFilename);
+        return;
+    }
+    // read the .mpb file and parse into pbFilenames[] list
+    const text = await resp.text(); // reads the whole file
+    const pbFilenames = String(text).split("\n").filter(line => line.trim().length > 0);
+    // append '.' before each filename to make relative to current dir (this .js file is in web/)
+    for (let i = 0; i < pbFilenames.length; i++) {
+        pbFilenames[i] = "." + pbFilenames[i];
+    }
+    console.log(`grid playback mode: ${pbFilenames.length} files`);
+
+    // Setup grid to match number of playback files
+    const gridN = Math.ceil(Math.sqrt(pbFilenames.length));
+    const tileW = canvas.width / gridN;
+    const tileH = canvas.height / gridN;
+    const draw = new Draw(canvas, view);
+    draw.drawGridBorders(gridN);
+
+    // for each tile
+    for (let i = 0; i < pbFilenames.length; i++) {
+        // location of this tile
+        // Todo: let Draw object figure this out from index and gridN
+        const tileRect = {
+            x: (i % gridN) * tileW,
+            y: Math.floor(i / gridN) * tileH,
+            w: tileW,
+            h: tileH,
+        };
+
+        // open and load next playback file
+        const pbList = await loadPlaybackList(pbFilenames[i]);
+        if ( !(pbList && pbList.length > 0)) {
+            console.log("Failed to load .pb", pbFilenames[i]);
+            return;
+        }
+
+        // rollout on this tile
+        let obs = { ...pbList[i].obs }; // copy 1st obs to obs
+        console.log(`Grid run ${i + 1} of ${pbFilenames.length} start`, obs);
+
+        draw.initialObs(obs)    // World view needs initial observation
+        draw.drawTile(obs, 0, tileRect);   // draw initial obs (angle=0)
+
+        steps = 0;
+        let done = false;
+        while (!done) {
+            steps += 1;
+            let nextObs = pbList[steps].obs;
+            let angleDelta = pbList[steps].angleDelta;
+            draw.drawTile(nextObs, angleDelta, tileRect);
+            done = pbList[steps].done || steps >= maxSteps;    
+        }
+        console.log(`Grid run ${i + 1}/${pbFilenames.length} done in ${steps} steps`);
+        draw.drawTileText(String(steps), tileRect);
+        gridTotalSteps += steps;
+    }
+    const mpbFilenameShort = mpbFilename.split('/').pop();
+    draw.drawTopText(`${mpbFilenameShort} total steps ${gridTotalSteps} avg ${(gridTotalSteps/gridN).toFixed(0)}`);
+}
+
+function formatStats(agentID, steps, action, obs, done) {
+    let text = `${agentID} Steps: ${String(steps).padStart(4, '\xA0')} \xA0steer: ${pad(action.steering,2)} \xA0\xA0throttle: ${action.throttle.toFixed(2)}`;
+    // add obs values
+    text += `\xA0\xA0wp1: (${pad(obs.wp1x,4)}, ${pad(obs.wp1y,4)}) \xA0vel: (${pad(obs.velx,4)}, ${pad(obs.vely,4)}) \xA0\xA0Done: ${done}`;
+    return text;
 }
 
 // stepOnce is a step helper that handles WASM
@@ -303,7 +290,7 @@ function readAction(ptr) {
 }
 
 // ---- UI stuff (step, repeat, trails, etc)----
-function clearStepState() {
+function clearStepKeyState() {
     sKeyDown = false;
     controls.stepOnce = false;
     controls.stepHold = false;
@@ -322,21 +309,13 @@ document.addEventListener("keydown", (e) => {
         return;
     }
 
-    if (key === "l") {
-        if (e.repeat) return;
-        controls.radials = !controls.radials;
-        return;
-    }
-
-    // if (activeAgent === humanAgent) return;
-
     if (key !== "r" && key !== "p" && key !== "s") return;
 
     // avoid repeated toggle spam
     if (e.repeat) return;
 
     if (key === "r") {
-        clearStepState();
+        clearStepKeyState();
         controls.replay = true;
         return;
     }
@@ -346,11 +325,11 @@ document.addEventListener("keydown", (e) => {
 
     if (key === "p") {
         controls.paused = !controls.paused;
-        clearStepState();
+        clearStepKeyState();
     } else if (key === "s") {
         if (!controls.paused) {
             controls.paused = true;
-            clearStepState();
+            clearStepKeyState();
         } else {
             // Tap => one step. Hold (>200ms) => continuous stepping until release.
             sKeyDown = true;
@@ -392,139 +371,17 @@ document.addEventListener("keyup", (e) => {
 // clear keys on window blur (alt-tab away)
 window.addEventListener("blur", (e) => {
     keyMap.clear();
-    clearStepState();
+    clearStepKeyState();
 });
 function resizeCanvas() {
     console.log("window.innerWidth:", window.innerWidth, "window.innerHeight:", window.innerHeight);
     let size = Math.min(window.innerWidth /2 - 30, window.innerHeight) ;
-    canvasZ.width = size;
-    canvasZ.height =  size;
-    canvasO.width = size;
-    canvasO.height =  size;
+    canvasL.width = size;
+    canvasL.height =  size;
+    canvasR.width = size;
+    canvasR.height =  size;
 
-    console.log(`Canvas resized to ${canvasZ.width}x${canvasZ.height}`);
-}
-
-// ---- Grid Mode ---- Grid mode uses it's own rollout loop and draw
-
-// only wp1 is drawn
-function drawGridTile(obs, ctx, tileRect) {
-    const { x, y, w, h } = tileRect;
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(x, y, w, h);
-    ctx.clip();
-
-    const scaleX = w / 2;
-    const scaleY = h / 2;
-    const px = x + scaleX + obs.wp1x * scaleX;
-    const py = y + scaleY - obs.wp1y * scaleY;
-
-    ctx.fillStyle = "rgba(255, 0, 0, 0.35)"; // note: alpha for visibility
-    ctx.fillRect(px - 1, py - 1, 2, 2);
-    ctx.restore();
-}
-function drawGridBorders(ctx, w, h, n) {
-    ctx.save();
-    ctx.strokeStyle = "#404040";
-    ctx.lineWidth = 1;
-    const cellW = w / n;
-    const cellH = h / n;
-    for (let r = 0; r < n; r++) {
-        for (let c = 0; c < n; c++) {
-            ctx.strokeRect(c * cellW, r * cellH, cellW, cellH);
-        }
-    }
-    ctx.restore();
-}
-
-// draws all, updates frame once
-async function gridPlayback(mpbFilename, canvas, ctx) {
-    const maxSteps = 3000;
-
-    const textPadPx = 6;
-    ctx.font = "10pt monospace";
-    ctx.fillStyle = "#cccccc";
-    ctx.textAlign = "left";
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    let gridTotalSteps = 0;
-    let steps = 0;
-
-    const url = new URL(mpbFilename, import.meta.url);
-    const resp = await fetch(url, {cache: 'no-store'});
-    if(!resp.ok) {
-        console.log("Failed to load .mpb", mpbFilename);
-        return;
-    }
-    // read the .mpb file and parse into pbFilenames[] list
-    const text = await resp.text(); // reads the whole file
-    const pbFilenames = String(text).split("\n").filter(line => line.trim().length > 0);
-    // append '.' before each filename to make relative to current dir (this .js file is in web/)
-    for (let i = 0; i < pbFilenames.length; i++) {
-        pbFilenames[i] = "." + pbFilenames[i];
-    }
-    console.log(`grid playback mode: ${pbFilenames.length} files`);
-
-    // Setup grid to match number of playback files
-    const gridN = Math.ceil(Math.sqrt(pbFilenames.length));
-    const tileW = canvas.width / gridN;
-    const tileH = canvas.height / gridN;
-    drawGridBorders(ctx, canvas.width, canvas.height, gridN);
-
-    // for each tile
-    for (let i = 0; i < pbFilenames.length; i++) {
-        // location of this tile
-        const tileRect = {
-            x: (i % gridN) * tileW,
-            y: Math.floor(i / gridN) * tileH,
-            w: tileW,
-            h: tileH,
-        };
-
-        // open and load next playback file
-        const pbList = await loadPlaybackList(pbFilenames[i]);
-        if ( !(pbList && pbList.length > 0)) {
-            console.log("Failed to load .pb", pbFilenames[i]);
-            return;
-        }
-
-        // rollout on this tile
-        let obs = { ...pbList[i].obs }; // copy 1st obs to obs
-        console.log(`Grid run ${i + 1} of ${pbFilenames.length} start`, obs);
-        drawGridTile(obs, ctx, tileRect); // draw initial obs
-        steps = 0;
-        let done = false;
-        while (!done) {
-            // step, draw
-            steps += 1;
-            let nextObs = pbList[steps].obs;
-            drawGridTile(nextObs, ctx, tileRect);
-            done = pbList[steps].done || steps >= maxSteps;         
-        }
-
-        console.log(`Grid run ${i + 1}/${pbFilenames.length} done in ${steps} steps`);
-        gridTotalSteps += steps;
-
-        // draw steps count in this tile
-        ctx.save();
-        ctx.font = "10pt monospace";
-        ctx.fillStyle = "#cccccc";
-        ctx.textAlign = "left";
-        ctx.textBaseline = "bottom";
-        ctx.fillText(String(steps), tileRect.x + textPadPx, tileRect.y + tileRect.h - textPadPx);
-        ctx.restore();
-    }
-
-    ctx.textBaseline = "top";
-    // strip directory from mpbFilename for display
-    const mpbFilenameShort = mpbFilename.split('/').pop();
-    ctx.fillText(`${mpbFilenameShort} total steps ${gridTotalSteps}`, textPadPx, textPadPx);
-
-}
-
-function deg2rad(deg) {
-    return deg * Math.PI / 180;
+    console.log(`Canvas resized to ${canvasL.width}x${canvasL.height}`);
 }
 
 async function loadPlaybackList(filename) {
@@ -562,40 +419,44 @@ async function loadPlaybackList(filename) {
     return records;
 }
 
-async function playback(filename) {
+async function playback(filename, canvas, view) {
     // single replay from .pb file. 
-    // rollout() manages UI controls pause, step, replay, trails, radials
+    // rollout() manages UI controls pause, step, replay, trails
     const pbList = await loadPlaybackList(filename);
     if (pbList) {
             console.log(`Playback mode: ${pbList.length} records`);
-            await rollout(pbList[0].obs, null, pbList); // 1st obs provides initial obs for Observer's view
+            const pbName = filename.split('/').pop();
+            await rollout(pbList[0].obs, null, pbName, pbList, canvas, view);
     } else console.log("Failed to load .pb", filename);
 }
 
 // *********************************
 // ---- MAIN LOOP ----
 
-resizeCanvas()
+// NOTE: CHOOSE MODE HERE
+let mode = 3;
 
-let mode = 3; /* choose a game mode */ 
-// 1) random obs with human
-// 2) single replay // Note: must set .pb filename (../dir/file)
-//     UI: p pause, s step, r replay, t trails, l radials
-// 3) multi-replay grid mode // Note: must set .mpb filename (../dir/file)
-// 4) agent0 random game (depricated, use .pb replay instead)
+if (mode === 1) { // 1) human, random initial obs
+    // await rollout(randomObs(), humanAgent, null, L, W);
+    await rollout({wp1x: .8, wp1y: -0.2, velx: 0, vely: 0}, humanAgent, "human",  null, L, W);
+} 
+else if (mode === 2) { // 2) single replay // Note: must set .pb filename
+    // UI: p pause, s step, r replay, t trails
+    // Note: two playbacks UI ok for trails, pause; conflict on stats, replay, step
+    // playback("../no_git_here/pb_agent0toT1_Jan_10%_07.pb", L, W);
+    playback("../no_git_here/TEST.pb", L, W);
+    playback("../no_git_here/TEST.pb", R, Z);
 
-if (mode === 1) {
-    await rollout(randomObs(), humanAgent);
 } 
-else if (mode === 2) {
-    playback("../no_git_here/pb_agent0_08.pb");
-} 
-else if (mode === 3) { 
-    gridPlayback("../no_git_here/agent0.mpb", canvasZ, ctxZ);
-    gridPlayback("../no_git_here/agent0toT1.mpb", canvasO, ctxO);
+else if (mode === 3) { // 3) multi-replay grid mode on either canvas // Note: must set .mpb filename
+    // gridPlayback("../no_git_here/TEST.mpb", canvasR, W);
+    gridPlayback("../no_git_here/agent0_Jan.mpb", L, Z);
+    gridPlayback("../no_git_here/agent0_Jan.mpb", R, W);
+    // gridPlayback("../no_git_here/agent0toT1_Jan.mpb", R, W);
 }
-else if (mode === 4) {
-    await rollout(randomObs(), agent0Wrapper);
+else if (mode === 4) { // 4) agent0 random game (unsupported, use .pb replay instead)
+    // UI: p pause, s step, r replay, t trails
+    await rollout(randomObs(), agent0Wrapper, "agent0 live", null, L, Z);
 }
 
 
@@ -614,17 +475,7 @@ function randomObs() {
     }
 }
 
-// create random action
-function randomAction() {
-    return {
-        // throttle, steering in -1..1
-        throttle: Math.random() * 2 - 1,
-        steering: Math.random() * 2 - 1,
-    }
-}
-
 // pads and adds space for negative sign. \xA0 is non-breaking space
 function pad(n, digits = 5) {
     return (Number(n) >= 0 ? "\xA0" : "") + Number(n).toFixed(digits);
 }
-
