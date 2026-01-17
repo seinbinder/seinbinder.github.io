@@ -20,7 +20,7 @@ const W = "world"; // draw flag
 const L = canvasL;
 const R = canvasR;
 
-// user controls (ignored when using `humanAgent`)
+// user controls
 const controls = {
     paused: false,
     stepOnce: false,
@@ -38,18 +38,19 @@ async function rollout(obs, agent, agentID, pbList = null, canvas, view) {
 
     const initialObs = { ...obs }; // save initial obs for 'r' replay. ... is a copy to ensure we don't accidently muck the original 
     let steps = 0;
+    let done = 0;
     const maxSteps = 3000;
     const draw = new Draw(canvas, view);
 
     function resetRunState() {
         obs = { ...initialObs };
         draw.initialObs(obs)    // save initial obs for world view, reset angleTotal
-        draw.draw(obs, 0, 0, true);   // draw initial obs, no action, angle 0
+        draw.draw(obs, 0, 0, false);   // draw initial obs, no action, angle 0, no trail
         steps = 0;
         clearStepKeyState();
         controls.replay = false;
-        controls.done = false;
-        const statText = formatStats(agentID, steps, { throttle: NaN, steering: NaN }, obs, controls.done); // initial conditions
+        done = false;
+        const statText = formatStats(agentID, steps, { throttle: NaN, steering: NaN }, obs, done); // initial conditions
         draw.drawTopText(statText);
     }
 
@@ -60,7 +61,7 @@ async function rollout(obs, agent, agentID, pbList = null, canvas, view) {
 
         // process UI controls
         if (controls.replay) { resetRunState();  }
-        if (controls.done) { await new Promise(requestAnimationFrame); continue;}
+        // if (done) { await new Promise(requestAnimationFrame); continue;}
         if (controls.paused && !(controls.stepOnce || controls.stepHold)) { await new Promise(requestAnimationFrame); continue;}
 
         // stepOnce either runs WASM step, or gets next obs and stats from playBack list
@@ -81,11 +82,13 @@ async function rollout(obs, agent, agentID, pbList = null, canvas, view) {
             done = "MAXSTEPS";
             console.log("GAME TERMINATED at Max steps reached ${maxSteps} ${done}");
         }
-        controls.done = doneNow;
+        done = doneNow;
 
         draw.drawTopText(formatStats(agentID, steps, action, obs, done));
-        if (controls.done) console.log("Game Done");
-
+        if (done) {
+            console.log("Game Done");
+            break;
+        }
         await new Promise(requestAnimationFrame)
     }
 }
@@ -105,9 +108,10 @@ async function gridPlayback(mpbFilename, canvas, view) {
     // read the .mpb file and parse into pbFilenames[] list
     const text = await resp.text(); // reads the whole file
     const pbFilenames = String(text).split("\n").filter(line => line.trim().length > 0);
-    // append '.' before each filename to make relative to current dir (this .js file is in web/)
+    // find root dir of mpb file for relative paths
+    const mpbDir = mpbFilename.substring(0, mpbFilename.lastIndexOf('/') + 1);
     for (let i = 0; i < pbFilenames.length; i++) {
-        pbFilenames[i] = "." + pbFilenames[i];
+        pbFilenames[i] = mpbDir + pbFilenames[i];
     }
     console.log(`grid playback mode: ${pbFilenames.length} files`);
 
@@ -396,18 +400,19 @@ async function loadPlaybackList(filename) {
     const lines = String(text).split("\n"); // split into lines
     for(let i = 0; i < lines.length; i++) {
         let fields = lines[i].split(','); 
-        if (fields.length != 8) {
+        if (fields.length != 10) {
             console.log("Playback line", i, "incorrect length", fields.length)
             continue; // skip it
         }
+        // wp1x, wp1y, velx, vely,     throttle, steer,   outRot, step, bestReward, done
         const wp1x = Number(fields[0]);
         const wp1y = Number(fields[1]);
         const velx = Number(fields[2]);
         const vely = Number(fields[3]);
         const throttle = Number(fields[4]);
         const steering = Number(fields[5]);
-        const angleDelta = Number(fields[6]);
-        const done = Number(fields[7]);
+        const angleDelta = Number(fields[6]);   // outRot
+        const done = Number(fields[9]);         // done
         records.push({
             obs: { wp1x, wp1y, velx, vely },
             action: { throttle, steering },
@@ -437,22 +442,18 @@ async function playback(filename, canvas, view) {
 let mode = 3;
 
 if (mode === 1) { // 1) human, random initial obs
-    // await rollout(randomObs(), humanAgent, null, L, W);
-    await rollout({wp1x: .8, wp1y: -0.2, velx: 0, vely: 0}, humanAgent, "human",  null, L, W);
+    // UI: p pause, t trails
+    await rollout(randomObs(), humanAgent, "human",  null, L, W);
 } 
 else if (mode === 2) { // 2) single replay // Note: must set .pb filename
     // UI: p pause, s step, r replay, t trails
     // Note: two playbacks UI ok for trails, pause; conflict on stats, replay, step
-    // playback("../no_git_here/pb_agent0toT1_Jan_10%_07.pb", L, W);
-    playback("../no_git_here/TEST.pb", L, W);
-    playback("../no_git_here/TEST.pb", R, Z);
-
+    playback("../no_git_here/pb/Jan1226_A0_02.pb", L, W);
+    playback("../no_git_here/pb/Jan1226_A0T1_02.pb", R, W);
 } 
 else if (mode === 3) { // 3) multi-replay grid mode on either canvas // Note: must set .mpb filename
-    // gridPlayback("../no_git_here/TEST.mpb", canvasR, W);
-    gridPlayback("../no_git_here/agent0_Jan.mpb", L, Z);
-    gridPlayback("../no_git_here/agent0_Jan.mpb", R, W);
-    // gridPlayback("../no_git_here/agent0toT1_Jan.mpb", R, W);
+    gridPlayback("../no_git_here/pb/Jan1226_A0T1.mpb", L, W);
+    gridPlayback("../no_git_here/pb/g1ta.mpb", R, W);
 }
 else if (mode === 4) { // 4) agent0 random game (unsupported, use .pb replay instead)
     // UI: p pause, s step, r replay, t trails
